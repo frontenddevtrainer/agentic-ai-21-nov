@@ -1,3 +1,14 @@
+"""Demo 1 - Text-to-SQL analyst team.
+
+    planner -> sql_writer <-> tools        (writer loops on SQL errors)
+                   |
+                 critic --revise--> sql_writer      (max 2 revisions)
+                   |
+               summarizer -> END
+
+Shows: multi-agent hand-offs, a tool loop that self-corrects from DB errors,
+a critic loop built with a conditional edge, and layered tool safety.
+"""
 from typing import Annotated
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
@@ -11,7 +22,8 @@ from demo1_text_to_sql.tools import TOOLS
 
 MAX_REVISIONS = 2
 
-class SalesState(TypedDict, total=False):
+
+class State(TypedDict, total=False):
     question: str
     plan: str
     messages: Annotated[list, add_messages]  # the SQL writer's working conversation
@@ -44,13 +56,9 @@ SUMMARIZER = (
 
 
 def build_graph(llm, checkpointer=None):
-
-    # llm - Haiku without tools
-    # writer_llm - Haiku with tools
-
     writer_llm = llm.bind_tools(TOOLS)
 
-    def planner(state: SalesState):
+    def planner(state: State):
         msg = llm.invoke([SystemMessage(content=PLANNER), HumanMessage(content=state["question"])])
         return {
             "plan": text_of(msg),
@@ -58,10 +66,10 @@ def build_graph(llm, checkpointer=None):
             "messages": [HumanMessage(content=f"Question: {state['question']}\n\nPlan:\n{text_of(msg)}")],
         }
 
-    def sql_writer(state: SalesState):
+    def sql_writer(state: State):
         return {"messages": [writer_llm.invoke([SystemMessage(content=WRITER)] + state["messages"])]}
 
-    def critic(state: SalesState):
+    def critic(state: State):
         last = state["messages"][-1]
         prompt = f"Question: {state['question']}\n\nPlan:\n{state['plan']}\n\nAnalyst's work:\n{text_of(last)}"
         verdict = text_of(llm.invoke([SystemMessage(content=CRITIC), HumanMessage(content=prompt)])).strip()
@@ -71,11 +79,11 @@ def build_graph(llm, checkpointer=None):
             out["messages"] = [HumanMessage(content=f"Reviewer feedback - please fix and re-run: {verdict}")]
         return out
 
-    def after_critic(state: SalesState):
+    def after_critic(state: State):
         approved = state["critique"].upper().startswith("APPROVE")
         return "summarizer" if approved or state.get("revisions", 0) > MAX_REVISIONS else "sql_writer"
 
-    def summarizer(state: SalesState):
+    def summarizer(state: State):
         ai = [m for m in state["messages"] if isinstance(m, AIMessage) and not m.tool_calls]
         work = text_of(ai[-1]) if ai else "(no result)"
         msg = llm.invoke(
@@ -83,20 +91,16 @@ def build_graph(llm, checkpointer=None):
         )
         return {"answer": text_of(msg)}
 
-    g = StateGraph(SalesState)
-    
+    g = StateGraph(State)
     g.add_node("planner", planner)
     g.add_node("sql_writer", sql_writer)
     g.add_node("tools", ToolNode(TOOLS))
     g.add_node("critic", critic)
     g.add_node("summarizer", summarizer)
-
-
     g.add_edge(START, "planner")
     g.add_edge("planner", "sql_writer")
     g.add_conditional_edges("sql_writer", tools_condition, {"tools": "tools", END: "critic"})
     g.add_edge("tools", "sql_writer")
     g.add_conditional_edges("critic", after_critic, {"sql_writer": "sql_writer", "summarizer": "summarizer"})
     g.add_edge("summarizer", END)
-    
     return g.compile(checkpointer=checkpointer)
