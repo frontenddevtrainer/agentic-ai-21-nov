@@ -1,0 +1,19 @@
+CREATE TABLE jobs (
+  id INTEGER PRIMARY KEY, name TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('succeeded','failed','running','queued')),
+  attempts INTEGER NOT NULL DEFAULT 1, max_attempts INTEGER NOT NULL DEFAULT 3,
+  last_run TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  will_succeed_on_retry INTEGER NOT NULL DEFAULT 0   -- simulation switch for the demo
+);
+CREATE TABLE job_logs (
+  id INTEGER PRIMARY KEY, job_id INTEGER NOT NULL REFERENCES jobs(id),
+  ts TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, level TEXT NOT NULL, message TEXT NOT NULL
+);
+CREATE TABLE incidents (
+  id INTEGER PRIMARY KEY, job_id INTEGER REFERENCES jobs(id), severity TEXT NOT NULL,
+  summary TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE audit_log (
+  id INTEGER PRIMARY KEY, ts TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  actor TEXT NOT NULL, action TEXT NOT NULL, detail TEXT NOT NULL DEFAULT '{}'   -- JSON text
+);
